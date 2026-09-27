@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ElegantSeries.Flow.Core/ElegantSeries.Flow.Core.csproj" />
+  <Project Path="ElegantSeries.Flow.Core.Tests/ElegantSeries.Flow.Core.Tests.csproj" />
+</Solution>
