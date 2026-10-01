@@ -6,11 +6,39 @@
     <Nullable>enable</Nullable>
     <IsAotCompatible>true</IsAotCompatible>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- NuGet package metadata -->
+    <PackageId>ElegantSeries.Flow</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>ligf</Authors>
+    <Description>A lightweight, AOT-friendly MVVM navigation library for .NET: region-based navigation stacks, KeepAlive ViewModel caching, typed navigation parameters, navigation guards, and lifecycle callbacks.</Description>
+    <PackageTags>navigation;mvvm;avalonia;wpf;maui;winui;viewmodel;aot;trimming</PackageTags>
+    <PackageProjectUrl>https://github.com/ligf/ElegantSeries.Flow</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ligf/ElegantSeries.Flow</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Documentation and symbols -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <!-- NU1902: known moderate vulnerability in Microsoft.Build.Tasks.Git, a build-time-only
+         SourceLink dependency (PrivateAssets=All); it never ships to package consumers. -->
+    <NoWarn>$(NoWarn);NU1902</NoWarn>
+    <ContinuousIntegrationBuild Condition="'$(ContinuousIntegrationBuild)' == ''">false</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

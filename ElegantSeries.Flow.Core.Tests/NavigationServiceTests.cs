@@ -101,6 +101,35 @@ public class KeepAliveViewModel : BaseViewModel, IDisposable
     }
 }
 
+/// <summary>
+/// A KeepAlive ViewModel whose synchronous <see cref="IDisposable.Dispose"/> always throws.
+/// Used to verify that one failing disposal never blocks the disposal of the remaining ViewModels.
+/// </summary>
+public class ThrowingKeepAliveViewModel : BaseViewModel, IDisposable
+{
+    public bool DisposeAttempted { get; private set; }
+
+    public void Dispose()
+    {
+        DisposeAttempted = true;
+        throw new InvalidOperationException("Sync dispose failed.");
+    }
+}
+
+/// <summary>
+/// A KeepAlive ViewModel whose <see cref="IAsyncDisposable.DisposeAsync"/> always throws.
+/// </summary>
+public class ThrowingAsyncDisposeViewModel : BaseViewModel, IAsyncDisposable
+{
+    public bool DisposeAttempted { get; private set; }
+
+    public ValueTask DisposeAsync()
+    {
+        DisposeAttempted = true;
+        throw new InvalidOperationException("Async dispose failed.");
+    }
+}
+
 public class TestView { }
 
 public class NavigationServiceTests
@@ -120,6 +149,8 @@ public class NavigationServiceTests
         services.AddTransient<ThrowingNavigatedFromViewModel>();
         services.AddTransient<ThrowingNavigatedToViewModel>();
         services.AddTransient<KeepAliveViewModel>();
+        services.AddTransient<ThrowingKeepAliveViewModel>();
+        services.AddTransient<ThrowingAsyncDisposeViewModel>();
 
         _serviceProvider = services.BuildServiceProvider();
         _navigationService = _serviceProvider.GetRequiredService<INavigationService>();
@@ -675,5 +706,109 @@ public class NavigationServiceTests
         _navigationService.ClearAllCache();
 
         Assert.Contains("EmptyStackRegion", notifiedRegions);
+    }
+
+    // ────────────────── Disposal-failure isolation (P1 regression) ──────────────────
+
+    /// <summary>
+    /// Puts a KeepAlive ViewModel into the cache and then off the navigation stack,
+    /// so a later cache clear disposes it directly.
+    /// </summary>
+    private async Task<ThrowingKeepAliveViewModel> CacheThrowingViewModelAsync(string regionName)
+    {
+        await _navigationService.NavigateToAsync<ThrowingKeepAliveViewModel>(regionName, NavigationMode.KeepAlive);
+        var vm = (ThrowingKeepAliveViewModel)_navigationService.GetCurrentViewModel(regionName)!;
+        await _navigationService.NavigateToAsync<TestHomeViewModel>(regionName, NavigationMode.Replace);
+        return vm;
+    }
+
+    private async Task<KeepAliveViewModel> CacheHealthyViewModelAsync(string regionName)
+    {
+        await _navigationService.NavigateToAsync<KeepAliveViewModel>(regionName, NavigationMode.KeepAlive);
+        var vm = (KeepAliveViewModel)_navigationService.GetCurrentViewModel(regionName)!;
+        await _navigationService.NavigateToAsync<TestHomeViewModel>(regionName, NavigationMode.Replace);
+        return vm;
+    }
+
+    [Fact]
+    public async Task ClearCacheAsync_WhenOneViewModelThrows_ShouldStillDisposeRemaining()
+    {
+        var throwing = await CacheThrowingViewModelAsync("CacheRegion");
+        var healthy = await CacheHealthyViewModelAsync("CacheRegion");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _navigationService.ClearCacheAsync("CacheRegion").AsTask());
+
+        Assert.Equal("Sync dispose failed.", ex.Message);
+        Assert.True(throwing.DisposeAttempted);
+        Assert.True(healthy.Disposed);
+    }
+
+    [Fact]
+    public async Task ClearCache_WhenOneViewModelThrows_ShouldStillDisposeRemaining()
+    {
+        var throwing = await CacheThrowingViewModelAsync("SyncCacheRegion");
+        var healthy = await CacheHealthyViewModelAsync("SyncCacheRegion");
+
+        // Exercise the synchronous clear path; only the setup above is asynchronous.
+        var ex = Assert.Throws<InvalidOperationException>(() => _navigationService.ClearCache("SyncCacheRegion"));
+
+        Assert.Equal("Sync dispose failed.", ex.Message);
+        Assert.True(throwing.DisposeAttempted);
+        Assert.True(healthy.Disposed);
+    }
+
+    [Fact]
+    public async Task ClearAllCacheAsync_WhenMultipleViewModelsThrow_ShouldAggregateExceptions()
+    {
+        var throwingA = await CacheThrowingViewModelAsync("RegionA");
+        var throwingB = await CacheThrowingViewModelAsync("RegionB");
+
+        var ex = await Assert.ThrowsAsync<AggregateException>(
+            () => _navigationService.ClearAllCacheAsync().AsTask());
+
+        Assert.Equal(2, ex.InnerExceptions.Count);
+        Assert.True(throwingA.DisposeAttempted);
+        Assert.True(throwingB.DisposeAttempted);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WhenCacheViewModelThrows_ShouldStillDisposeStackViewModels()
+    {
+        var throwing = await CacheThrowingViewModelAsync("DisposeRegion");
+
+        // A healthy KeepAlive ViewModel that stays on the navigation stack.
+        await _navigationService.NavigateToAsync<KeepAliveViewModel>("DisposeRegion", NavigationMode.KeepAlive);
+        var stacked = (KeepAliveViewModel)_navigationService.GetCurrentViewModel("DisposeRegion")!;
+
+        var navService = (NavigationService)_navigationService;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => navService.DisposeAsync().AsTask());
+
+        Assert.Equal("Sync dispose failed.", ex.Message);
+        Assert.True(throwing.DisposeAttempted);
+        Assert.True(stacked.Disposed);
+    }
+
+    [Fact]
+    public async Task Dispose_WhenStackViewModelThrows_ShouldStillDisposeRemainingStackViewModels()
+    {
+        var services = new ServiceCollection();
+        services.AddFlowNavigation();
+        services.AddTransient<ThrowingKeepAliveViewModel>();
+        services.AddTransient<KeepAliveViewModel>();
+        services.AddTransient<TestHomeViewModel>();
+        var sp = services.BuildServiceProvider();
+        var navService = (NavigationService)sp.GetRequiredService<INavigationService>();
+
+        await navService.NavigateToAsync<ThrowingKeepAliveViewModel>("StackRegion");
+        var throwing = (ThrowingKeepAliveViewModel)navService.GetCurrentViewModel("StackRegion")!;
+        await navService.NavigateToAsync<KeepAliveViewModel>("StackRegion");
+        var stacked = (KeepAliveViewModel)navService.GetCurrentViewModel("StackRegion")!;
+
+        var ex = Assert.Throws<InvalidOperationException>(() => navService.Dispose());
+
+        Assert.Equal("Sync dispose failed.", ex.Message);
+        Assert.True(throwing.DisposeAttempted);
+        Assert.True(stacked.Disposed);
     }
 }
