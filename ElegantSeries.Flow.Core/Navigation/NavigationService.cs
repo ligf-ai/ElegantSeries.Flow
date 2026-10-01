@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
 using ElegantSeries.Flow.Core.ViewModels;
@@ -924,8 +923,7 @@ public sealed class NavigationService(IServiceProvider serviceProvider) : INavig
 
     /// <summary>
     /// Invokes queued event handlers. Subscriber exceptions are swallowed so a faulty
-    /// subscriber can never corrupt navigation state; they are written to the debug
-    /// output to aid diagnostics.
+    /// subscriber can never corrupt navigation state.
     /// </summary>
     private static void RaiseEvents(List<Action>? events)
     {
@@ -936,9 +934,9 @@ public sealed class NavigationService(IServiceProvider serviceProvider) : INavig
             {
                 action();
             }
-            catch (Exception ex)
+            catch
             {
-                Debug.WriteLine($"[ElegantSeries.Flow] Event subscriber threw {ex.GetType().Name}: {ex.Message}");
+                // Swallow: event subscribers must never break navigation.
             }
         }
     }
