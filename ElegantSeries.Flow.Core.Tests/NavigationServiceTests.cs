@@ -35,6 +35,55 @@ public class ThrowingNavigatedToViewModel : BaseViewModel, INavigationAware
     public void OnNavigatedFrom() { }
 }
 
+/// <summary>
+/// A ViewModel that navigates again synchronously from inside
+/// <see cref="INavigationAware.OnNavigatedTo"/>. If lifecycle callbacks ran under
+/// the navigation lock, the nested call would deadlock.
+/// </summary>
+public class ReentrantNavigatedToViewModel : BaseViewModel, INavigationAware
+{
+    public void OnNavigatedTo(object? parameter)
+    {
+        // Deliberately blocking: a lock held across lifecycle callbacks would deadlock here.
+        NavigateToAsync<TestHomeViewModel>().GetAwaiter().GetResult();
+    }
+
+    public void OnNavigatedFrom() { }
+}
+
+/// <summary>
+/// Guard that replaces itself via a nested navigation while an outer navigation is
+/// awaiting this guard, forcing the outer navigation into the stateMismatch path.
+/// </summary>
+public class StateMismatchGuardViewModel : BaseViewModel, INavigationGuard
+{
+    private bool _nestedDone;
+
+    public async Task<bool> CanNavigateFromAsync()
+    {
+        if (!_nestedDone)
+        {
+            _nestedDone = true;
+            // Replace the current page while the outer navigation is awaiting this guard:
+            // when the guard returns, the stack top no longer matches and the outer
+            // navigation is abandoned (stateMismatch).
+            await Navigation!.NavigateToAsync<TestHomeViewModel>(mode: NavigationMode.Replace);
+        }
+
+        return true;
+    }
+}
+
+/// <summary>
+/// Tracks disposal so tests can observe instances the service resolved but never used.
+/// </summary>
+public class TrackedDisposeViewModel : BaseViewModel, IDisposable
+{
+    public static int DisposeCount;
+
+    public void Dispose() => DisposeCount++;
+}
+
 public class TestDetailViewModel : BaseViewModel, INavigationAware<string>, IAsyncDisposable
 {
     public string? ReceivedParam { get; private set; }
@@ -148,6 +197,9 @@ public class NavigationServiceTests
         services.AddTransient<GuardedViewModel>();
         services.AddTransient<ThrowingNavigatedFromViewModel>();
         services.AddTransient<ThrowingNavigatedToViewModel>();
+        services.AddTransient<ReentrantNavigatedToViewModel>();
+        services.AddTransient<StateMismatchGuardViewModel>();
+        services.AddTransient<TrackedDisposeViewModel>();
         services.AddTransient<KeepAliveViewModel>();
         services.AddTransient<ThrowingKeepAliveViewModel>();
         services.AddTransient<ThrowingAsyncDisposeViewModel>();
@@ -363,6 +415,42 @@ public class NavigationServiceTests
 
         await navigationService.DisposeAsync();
         await serviceProvider.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task NavigateToAsync_WhenStackChangesDuringGuard_ShouldDisposeAbandonedTransientViewModel()
+    {
+        TrackedDisposeViewModel.DisposeCount = 0;
+
+        await _navigationService.NavigateToAsync<StateMismatchGuardViewModel>();
+        var result = await _navigationService.NavigateToAsync<TrackedDisposeViewModel>();
+
+        // The navigation was abandoned: the guard's nested Replace won the race.
+        Assert.False(result);
+        Assert.True(_navigationService.IsActive<TestHomeViewModel>());
+        // The pre-resolved but never used Transient instance is disposed by the service.
+        Assert.Equal(1, TrackedDisposeViewModel.DisposeCount);
+    }
+
+    [Fact]
+    public async Task ClearCacheAsync_ThenGoBack_ShouldFireDeferredDisposalOfPoppedKeepAliveViewModel()
+    {
+        await _navigationService.NavigateToAsync<TestHomeViewModel>();
+        await _navigationService.NavigateToAsync<KeepAliveViewModel>(mode: NavigationMode.KeepAlive);
+        var keepAlive = (KeepAliveViewModel)_navigationService.GetCurrentViewModel()!;
+
+        await _navigationService.ClearCacheAsync("MainRegion");
+
+        // Still referenced by the navigation stack: disposal is deferred, not executed.
+        Assert.False(keepAlive.Disposed);
+        Assert.True(_navigationService.IsActive<KeepAliveViewModel>());
+
+        Assert.True(await _navigationService.GoBackAsync());
+
+        // Popping the last reference fires the deferred disposal exactly once.
+        Assert.True(keepAlive.Disposed);
+        Assert.Equal(1, keepAlive.DisposeCallCount);
+        Assert.True(_navigationService.IsActive<TestHomeViewModel>());
     }
 
     [Fact]
@@ -630,6 +718,20 @@ public class NavigationServiceTests
         {
             _navigationService.RegionNavigated -= Handler;
         }
+    }
+
+    [Fact]
+    public async Task NavigateToAsync_WhenOnNavigatedToNavigatesAgain_ShouldNotDeadlock()
+    {
+        // Run the outer navigation on a worker thread: a deadlock inside OnNavigatedTo
+        // surfaces as a timeout here instead of hanging the whole test suite.
+        var outerTask = Task.Run(() => _navigationService.NavigateToAsync<ReentrantNavigatedToViewModel>());
+
+        var winner = await Task.WhenAny(outerTask, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.Same(outerTask, winner);
+
+        Assert.True(await outerTask);
+        Assert.True(_navigationService.IsActive<TestHomeViewModel>());
     }
 
     [Fact]

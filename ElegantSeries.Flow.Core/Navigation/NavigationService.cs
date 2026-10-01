@@ -485,19 +485,25 @@ public sealed class NavigationService(IServiceProvider serviceProvider) : INavig
                     }
                 }
 
+                // A ViewModel resolved by this service but never placed on a stack is owned
+                // by the service and is disposed after the lock (see DisposeUnusedViewModelAsync).
+                // ViewModels are registered Transient (see README), so the navigation service —
+                // not the DI scope — is responsible for instances it resolved but discarded.
+                // This covers both the stateMismatch race above and the KeepAlive cache race
+                // below: in either case the unused instance would otherwise leak until the
+                // DI scope itself is disposed.
+                if (redundantVmToDispose != null)
+                {
+                    vmToDisposeAfterLock = redundantVmToDispose;
+                }
+
                 if (stateMismatch)
                 {
-                    // Don't dispose the pre-resolved VM here; it was just constructed by the
-                    // DI scope and may be reused by the caller's scope.
+                    // The stack changed while the guard was running: abandon this navigation.
                     // success stays false; the queue building below is skipped.
                 }
                 else
                 {
-                    if (redundantVmToDispose != null)
-                    {
-                        vmToDisposeAfterLock = redundantVmToDispose;
-                    }
-
                     // Collect the lifecycle/disposal/event work under the lock,
                     // then execute it outside the lock (see RunTransitionAsync).
                     foreach (var old in entriesToDeactivate)
